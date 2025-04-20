@@ -1,0 +1,7 @@
+﻿{
+  "name": "ErenshorQuestMarkers",
+  "version_number": "1.0.0",
+  "website_url": "https://github.com/drizzlx/Erenshor-QuestMarkers",
+  "description": "Adds quest markers above NPC names, also supports Mini Map mod.",
+  "dependencies": [ "BepInEx-BepInExPack-5.4.2100" ]
+}
