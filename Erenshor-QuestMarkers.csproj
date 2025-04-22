@@ -13,6 +13,9 @@
       https://nuget.samboy.dev/v3/index.json
     </RestoreAdditionalProjectSources>
     <RootNamespace>Erenshor_QuestMarkers</RootNamespace>
+    <DebugType>portable</DebugType>  <!-- Generates .pdb for stack traces -->
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize>false</Optimize>       <!-- Keep optimization off to get line numbers -->
   </PropertyGroup>
 
   <ItemGroup>
@@ -29,6 +32,10 @@
   <ItemGroup>
     <Reference Include="Assembly-CSharp">
       <HintPath>..\ErenBot\lib\Assembly-CSharp.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>..\Assemblies\UnityEngine.UI.dll</HintPath>
       <Private>False</Private>
     </Reference>
   </ItemGroup>

@@ -1,5 +1,5 @@
-﻿using System.IO;
-using System.Linq;
+﻿using System;
+using System.IO;
 using BepInEx;
 using UnityEngine;
 
@@ -11,12 +11,45 @@ public class QuestMarkersPlugin : BaseUnityPlugin
     private Texture2D _questAvailableTexture;
     private Texture2D _questTurnInTexture;
 
-    private float _questMarkerRadius = 100f;
-       
+    public const float QuestMarkerRadius = 70f;
+
     private void Awake()
     {
-        var questAvailablePath = Path.Combine(Paths.PluginPath, "Drizzlx-Erenshor-QuestMarker", "Assets", "quest-available.png");
-        var questTurnInPath = Path.Combine(Paths.PluginPath, "Drizzlx-Erenshor-QuestMarker", "Assets", "quest-complete.png");
+        
+        LoadTextures();
+    }
+    
+    private void OnDestroy()
+    {
+        try
+        {
+            var allCharacters = GameObject.FindObjectsOfType<Character>();
+
+            foreach (var character in allCharacters)
+            {
+                var marker = character.transform.Find("QuestMarkerWorldUI");
+                if (marker != null)
+                {
+                    Destroy(marker.gameObject);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError($"Error cleaning up quest markers: {ex}");
+        }
+    }
+
+    private void LoadTextures()
+    {
+        var assetDir = Path.Combine(Paths.PluginPath, "drizzlx-ErenshorQuestMarkers");
+        var questAvailablePath = Path.Combine(assetDir, "quest-available.png");
+        var questTurnInPath = Path.Combine(assetDir, "quest-complete.png");
+        
+        if (!Directory.Exists(assetDir))
+        {
+            return;
+        }
         
         _questAvailableTexture = LoadImage(questAvailablePath);
         _questTurnInTexture = LoadImage(questTurnInPath);
@@ -24,53 +57,119 @@ public class QuestMarkersPlugin : BaseUnityPlugin
 
     private void OnGUI()
     {
+        if (GameData.PlayerControl == null || GameData.InCharSelect)
+            return;
+        
+        if (_questAvailableTexture == null || _questTurnInTexture == null)
+        {
+            LoadTextures();
+        }
+        
         // Get all NPC within the detection radius
-        Collider[] hitColliders = Physics.OverlapSphere(GameData.PlayerControl.transform.position, _questMarkerRadius);
+        Collider[] hitColliders = Physics.OverlapSphere(GameData.PlayerControl.transform.position, QuestMarkerRadius);
 
         foreach (var collider in hitColliders)
         {
             Character character = collider.GetComponent<Character>();
-                
-            if (character != null 
-                && character.Alive
-                && character.isNPC)
+
+            if (character == null || !character.isNPC)
             {
-                var questManager = character.GetComponent<QuestManager>(); // quest receiver
+                continue;
+            }
+            
+            // Remove markers after quest state change.
+            var marker = character.transform.Find("QuestMarkerWorldUI");
+            var rawImage = marker?.GetComponentInChildren<UnityEngine.UI.RawImage>();
+            
+            // Check if the npc has a quest to turn in.
+            var questManager = character.GetComponent<QuestManager>();
 
-                if (questManager == null)
-                    continue;
-
-                if (ShowQuestTurnInMarker(questManager))
-                {
-                    DrawMarkerAbove(character, _questTurnInTexture);
-                    continue;
-                }
+            if (questManager != null)
+            {
+                var showQuestTurnInMarker = ShowQuestTurnInMarker(questManager);
                 
-                if (ShowQuestAvailableMarker(character))
+                // Remove outdated marker
+                if (!showQuestTurnInMarker && rawImage != null && rawImage.texture == _questTurnInTexture)
                 {
-                    DrawMarkerAbove(character, _questAvailableTexture);
+                    Destroy(marker.gameObject);
 
+                    continue;
                 }
+
+                if (showQuestTurnInMarker)
+                {
+                    AttachMarkerToCharacter(character, _questTurnInTexture);
+                        
+                    continue;
+                }
+            }
+                
+            var showQuestAvailableMarker = ShowQuestAvailableMarker(character);
+            
+            // Remove outdated marker
+            if (!showQuestAvailableMarker && rawImage != null && rawImage.texture == _questAvailableTexture)
+            {
+                Destroy(marker.gameObject);
+
+                continue;
+            }
+                
+            if (showQuestAvailableMarker)
+            {
+                AttachMarkerToCharacter(character, _questAvailableTexture);
             }
         }
     }
-
-    private void DrawMarkerAbove(Character character, Texture2D texture)
+    
+    private void AttachMarkerToCharacter(Character character, Texture2D texture)
     {
-        Vector3 worldPos = character.transform.position + Vector3.up * 2.5f; // Above head
-        Vector3 screenPos = GameData.PlayerControl.camera.WorldToScreenPoint(worldPos);
+        // Prevent duplicates
+        if (character.transform.Find("QuestMarkerWorldUI") != null)
+            return;
 
-        if (screenPos.z > 0)
-        {
-            float iconSize = 64f;
+        float npcHeight = character.GetComponent<Collider>()?.bounds.size.y ?? 2.5f;
+        npcHeight = Mathf.Clamp(npcHeight, 3.0f, 3.0f);
 
-            float x = screenPos.x - iconSize / 2f;
-            float y = Screen.height - screenPos.y - iconSize; // Shift up by full icon height
+        var marker = CreateWorldMarker(texture);
+        
+        marker.name = "QuestMarkerWorldUI";
+        marker.transform.SetParent(character.transform);
+        marker.transform.localPosition = new Vector3(0, npcHeight + 0.2f, 0); // Above head
+        marker.transform.rotation = Quaternion.identity;
 
-            GUI.DrawTexture(new Rect(x, y, iconSize, iconSize), texture);
-        }
+        // Add billboard so it always faces the camera
+        var billboard = marker.AddComponent<BillboardToCamera>();
+        
+        // Enable class to be called by Unity
+        billboard.enabled = true;
+        marker.SetActive(true);
     }
 
+    private GameObject CreateWorldMarker(Texture2D texture)
+    {
+        // Create the base object
+        GameObject canvasGO = new GameObject("QuestMarkerWorldUI");
+        var canvas = canvasGO.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.WorldSpace;
+        canvas.sortingOrder = 0;
+
+        var canvasRect = canvas.GetComponent<RectTransform>();
+        canvasRect.sizeDelta = new Vector2(1f, 1f);
+        canvasRect.localScale = Vector3.one * 0.02f;
+
+        // Add the image child
+        GameObject iconGO = new GameObject("Icon");
+        iconGO.transform.SetParent(canvasGO.transform, false);
+
+        var image = iconGO.AddComponent<UnityEngine.UI.RawImage>();
+        image.texture = texture;
+        image.raycastTarget = false;
+
+        var imageRect = image.GetComponent<RectTransform>();
+        imageRect.sizeDelta = new Vector2(64f, 64f); // Image size in world units (scaled)
+
+        return canvasGO;
+    }
 
     private bool ShowQuestAvailableMarker(Character character)
     {
@@ -79,19 +178,31 @@ public class QuestMarkersPlugin : BaseUnityPlugin
         if (npcDialogueManager == null)
             return false;
 
-        foreach (var npcDialogue in npcDialogueManager.MyDialogOptions)
+        if (npcDialogueManager.SpecificClass.Count == 0 || npcDialogueManager.SpecificClass.Contains(GameData.PlayerStats.CharacterClass))
         {
-            var completedQuest = GameData.CompletedQuests.Contains(npcDialogue.QuestToAssign.DBName);
-            var quest = npcDialogue.QuestToAssign;
-            
-            if (!completedQuest)
+            foreach (var npcDialogue in npcDialogueManager.MyDialogOptions)
             {
-                return true;
-            }
+                var quest = npcDialogue.QuestToAssign;
+
+                if (quest == null)
+                {
+                    continue;
+                }
+                
+                if (GameData.HasQuest.Contains(quest.DBName))
+                {
+                    continue;
+                }
             
-            if (quest.repeatable)
-            {
-                return true;
+                if (!GameData.IsQuestDone(quest.DBName))
+                {
+                    return true;
+                }
+            
+                if (GameData.IsQuestDone(quest.DBName) && quest.repeatable)
+                {
+                    return true;
+                }
             }
         }
         
@@ -117,14 +228,55 @@ public class QuestMarkersPlugin : BaseUnityPlugin
         {
             byte[] data = File.ReadAllBytes(assetPath);
             Texture2D tex = new Texture2D(4, 4, TextureFormat.RGBA32, false);
+            
             if (!tex.LoadImage(data))
             {
                 Logger.LogError("Failed to load texture from " + assetPath);
             }
+            
             return tex;
         }
 
         Logger.LogError("Texture not found at " + assetPath);
+        
         return null;
+    }
+}
+
+public class BillboardToCamera : MonoBehaviour
+{
+    private Camera _cam;
+    private Transform _player;
+
+    private void Start()
+    {
+        _cam = GameData.PlayerControl?.camera;
+        _player = GameData.PlayerControl?.transform;
+    }
+
+    private void LateUpdate()
+    {
+        if (_cam == null)
+        {
+            _cam = GameData.PlayerControl?.camera;
+        }
+
+        if (_player == null)
+        {
+            _player = GameData.PlayerControl?.transform;
+        }
+        
+        if (_cam == null || _player == null)
+            return;
+
+        // Rotate to face the camera
+        transform.rotation = Quaternion.LookRotation(transform.position - _cam.transform.position);
+
+        // Remove marker if it's too far away from the player
+        float distance = Vector3.Distance(transform.position, _player.position);
+        if (distance > QuestMarkersPlugin.QuestMarkerRadius)
+        {
+            Destroy(gameObject); // Remove this marker
+        }
     }
 }
