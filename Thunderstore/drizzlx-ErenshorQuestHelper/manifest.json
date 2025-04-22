@@ -1,0 +1,7 @@
+﻿{
+  "name": "ErenshorQuestHelper",
+  "version_number": "1.0.0",
+  "website_url": "https://github.com/drizzlx/Erenshor-QuestHelper",
+  "description": "Adds quest markers ! and ? above NPC names like in World of Warcraft",
+  "dependencies": [ "BepInEx-BepInExPack-5.4.2100" ]
+}
