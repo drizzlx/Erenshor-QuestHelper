@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Collections;
 using System.IO;
+using System.Linq;
 using BepInEx;
 using UnityEngine;
 
@@ -12,10 +14,16 @@ public class QuestHelperPlugin : BaseUnityPlugin
     private Texture2D _questTurnInTexture;
 
     public const float QuestMarkerRadius = 70f;
+    
+    private static readonly string[] _bankNpcs = { "Prestigio Valusha", "Validus Greencent", "Comstock Retalio", "Summoned: Pocket Rift" };
+    private static readonly string[] _otherNpcs = { "Thella Steepleton", "Goldie Retalio" };
+    
+    // Performance
+    private float _questMarkerUpdateInterval = 0.5f;
+    private bool _updatingQuestMarkers = false;
 
     private void Awake()
     {
-        
         LoadTextures();
     }
     
@@ -59,27 +67,50 @@ public class QuestHelperPlugin : BaseUnityPlugin
     {
         if (GameData.PlayerControl == null || GameData.InCharSelect)
             return;
-        
-        if (_questAvailableTexture == null || _questTurnInTexture == null)
+
+        if (GameData.Zoning)
         {
-            LoadTextures();
+            return;
         }
         
+        if (!_updatingQuestMarkers)
+            StartCoroutine(UpdateQuestMarkersCoroutine());
+    }
+
+    private IEnumerator  UpdateQuestMarkersCoroutine()
+    {
+        _updatingQuestMarkers = true;
+        
         // Get all NPC within the detection radius
-        Collider[] hitColliders = Physics.OverlapSphere(GameData.PlayerControl.transform.position, QuestMarkerRadius);
+        var hitColliders = Physics.OverlapSphere(GameData.PlayerControl.transform.position, QuestMarkerRadius);
 
         foreach (var collider in hitColliders)
         {
-            Character character = collider.GetComponent<Character>();
-
-            if (character == null || !character.isNPC)
-            {
+            if (collider == null)
                 continue;
-            }
+            
+            var character = collider.GetComponent<Character>();
+
+            if (character == null)
+                continue;
             
             // Check if the npc has a quest to turn in.
             var questManager = character.GetComponent<QuestManager>();
+            // Check if npc has potential for available quest.
+            var npcDialogManager = character.GetComponent<NPCDialogManager>();
 
+            if ((questManager == null && npcDialogManager == null) // can't be a quest giver
+                || !character.isNPC // ignore non-npc
+                || character.MiningNode // ignore mining nodes
+                || character.transform == null 
+                || character.MyNPC == null
+                || character.MyNPC.SimPlayer // ignore sims
+                || character.transform.name == "Player") // ignore player self
+            {
+                continue;
+            }
+
+            // If there is a quest manager, check for quests to turn in.
             if (questManager != null)
             {
                 var showQuestTurnInMarker = ShowQuestTurnInMarker(questManager);
@@ -91,7 +122,8 @@ public class QuestHelperPlugin : BaseUnityPlugin
                     continue;
                 }
             }
-                
+            
+            // Check for available quests.
             var showQuestAvailableMarker = ShowQuestAvailableMarker(character);
                 
             if (showQuestAvailableMarker)
@@ -108,7 +140,15 @@ public class QuestHelperPlugin : BaseUnityPlugin
             {
                 Destroy(questMarkerWorldUI.gameObject);
             }
+
+            // Wait 1 frame before continuing to the next character.
+            yield return null;
         }
+        
+        // Wait before processing markers again.
+        yield return new WaitForSeconds(_questMarkerUpdateInterval);
+        
+        _updatingQuestMarkers = false;
     }
     
     private void AttachMarkerToCharacter(Character character, Texture2D texture)
@@ -138,7 +178,7 @@ public class QuestHelperPlugin : BaseUnityPlugin
             return;
         }
 
-        float npcHeight = character.GetComponent<Collider>()?.bounds.size.y ?? 2.5f;
+        var npcHeight = character.GetComponent<Collider>()?.bounds.size.y ?? 2.5f;
         npcHeight = Mathf.Clamp(npcHeight, 3.0f, 3.0f);
 
         var marker = CreateWorldMarker(texture);
@@ -170,7 +210,7 @@ public class QuestHelperPlugin : BaseUnityPlugin
     private GameObject CreateWorldMarker(Texture2D texture)
     {
         // Create the base object
-        GameObject canvasGO = new GameObject("QuestMarkerWorldUI");
+        var canvasGO = new GameObject("QuestMarkerWorldUI");
         var canvas = canvasGO.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.WorldSpace;
         canvas.sortingOrder = 0;
@@ -180,7 +220,7 @@ public class QuestHelperPlugin : BaseUnityPlugin
         canvasRect.localScale = Vector3.one * 0.02f;
 
         // Add the image child
-        GameObject iconGO = new GameObject("Icon");
+        var iconGO = new GameObject("Icon");
         iconGO.transform.SetParent(canvasGO.transform, false);
 
         var image = iconGO.AddComponent<UnityEngine.UI.RawImage>();
@@ -235,21 +275,27 @@ public class QuestHelperPlugin : BaseUnityPlugin
     {
         foreach (var quest in questManager.NPCQuests)
         {
-            if (GameData.HasQuest.Contains(quest.QuestName) && !GameData.CompletedQuests.Contains(quest.QuestName))
+            if (quest == null)
+                continue;
+            
+            if (GameData.HasQuest.Contains(quest.QuestName) 
+                && (!GameData.CompletedQuests.Contains(quest.QuestName) || quest.repeatable))
             {
                 var requiredItems = quest.RequiredItems;
 
                 foreach (var requiredItem in requiredItems)
                 {
+                    if (requiredItem == null || GameData.PlayerInv == null)
+                        continue;
+                    
                     if (!GameData.PlayerInv.HasItem(requiredItem, false))
                     {
-                        if (GameData.PlayerInv.mouseSlot.MyItem != null &&
-                            GameData.PlayerInv.mouseSlot.MyItem.ItemName == requiredItem.ItemName)
+                        if (GameData.PlayerInv.mouseSlot?.MyItem?.ItemName == requiredItem.ItemName)
                         {
                             return true;
                         }
 
-                        if (GameData.TradeWindow.LootSlots != null)
+                        if (GameData.TradeWindow?.LootSlots != null)
                         {
                             foreach (var lootSlot in GameData.TradeWindow.LootSlots)
                             {
@@ -275,8 +321,8 @@ public class QuestHelperPlugin : BaseUnityPlugin
     {
         if (File.Exists(assetPath))
         {
-            byte[] data = File.ReadAllBytes(assetPath);
-            Texture2D tex = new Texture2D(4, 4, TextureFormat.RGBA32, false);
+            var data = File.ReadAllBytes(assetPath);
+            var tex = new Texture2D(4, 4, TextureFormat.RGBA32, false);
             
             if (!tex.LoadImage(data))
             {
@@ -322,7 +368,7 @@ public class BillboardToCamera : MonoBehaviour
         transform.rotation = Quaternion.LookRotation(transform.position - _cam.transform.position);
 
         // Remove marker if it's too far away from the player
-        float distance = Vector3.Distance(transform.position, _player.position);
+        var distance = Vector3.Distance(transform.position, _player.position);
         if (distance > QuestHelperPlugin.QuestMarkerRadius + 10f) // offset to prevent flicker
         {
             Destroy(gameObject); // Remove this marker
